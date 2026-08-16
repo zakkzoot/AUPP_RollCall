@@ -42,7 +42,10 @@ You need: a GitHub account, a [Supabase](https://supabase.com) account, a [Verce
 git clone <your-fork-url> nfc-attend
 cd nfc-attend
 npm install
+cp .env.example .env.local   # fill in once you have the values from steps 2 and 4
 ```
+
+`npm run dev` serves it locally, `npm run build` produces the production bundle. All four variables in `.env.local` are required — if any is missing the app shows a "Setup needed" screen naming the ones it needs rather than failing silently.
 
 ### 2. Create the Supabase project
 - Create a new project in the Supabase dashboard. Note the **Project URL** and the **anon** and **service_role** keys (Project Settings → API).
