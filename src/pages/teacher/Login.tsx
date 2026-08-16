@@ -25,7 +25,11 @@ export default function Login() {
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
+  // Safety net for accounts created before the profile trigger existed. New
+  // sign-ups get their teachers row from the on_auth_user_created trigger, which
+  // works whether or not email confirmation is on.
   async function ensureTeacherRow(userId: string) {
     const { data } = await supabase
       .from("teachers")
@@ -44,10 +48,33 @@ export default function Login() {
   async function handle() {
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       if (mode === "up") {
-        const { data, error } = await supabase.auth.signUp({ email, password });
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          // Read by the profile trigger so the teacher's own name and timezone
+          // survive, instead of falling back to the email prefix.
+          options: {
+            data: {
+              full_name: fullName.trim(),
+              timezone,
+            },
+          },
+        });
         if (error) throw error;
+
+        // No session means email confirmation is on. Say so — this used to
+        // bounce silently back to the login screen with no explanation.
+        if (!data.session) {
+          setNotice(
+            "Account created. Check your email for a confirmation link, then sign in below.",
+          );
+          setMode("in");
+          setPassword("");
+          return;
+        }
         if (data.user) await ensureTeacherRow(data.user.id);
       } else {
         const { data, error } = await supabase.auth.signInWithPassword({
@@ -133,6 +160,9 @@ export default function Login() {
           />
         </div>
 
+        {notice && (
+          <p className="text-signal text-sm mt-4 leading-relaxed">{notice}</p>
+        )}
         {error && <p className="text-halt text-sm mt-4">{error}</p>}
 
         <button

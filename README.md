@@ -52,7 +52,7 @@ cp .env.example .env.local   # fill in once you have the values from steps 2 and
 - Enable email auth: Authentication → Providers → Email → enabled. (For quick testing, turn off "Confirm email" so you can log in immediately.)
 
 ### 3. Apply the database schema
-Either paste `supabase/migrations/0001_init.sql` into the Supabase SQL editor and run it, **or** use the CLI:
+Either paste the files in `supabase/migrations/` into the Supabase SQL editor and run them in order (`0001_init.sql`, then `0002_teacher_profile_trigger.sql`), **or** use the CLI:
 ```bash
 supabase link --project-ref <your-project-ref>
 supabase db push
@@ -153,6 +153,7 @@ Every teacher who signs up gets their own tag, timetable, locations, and attenda
 ```
 supabase/
   migrations/0001_init.sql        schema + RLS
+  migrations/0002_*.sql           auto-create the teacher profile on sign-up
   functions/checkin/index.ts      student check-in (geofence, time, device binding)
   functions/export/index.ts       teacher CSV export (JWT-scoped)
   functions/_shared/utils.ts      haversine, timezone, helpers
