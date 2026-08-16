@@ -42,14 +42,17 @@ You need: a GitHub account, a [Supabase](https://supabase.com) account, a [Verce
 git clone <your-fork-url> nfc-attend
 cd nfc-attend
 npm install
+cp .env.example .env.local   # fill in once you have the values from steps 2 and 4
 ```
+
+`npm run dev` serves it locally, `npm run build` produces the production bundle. All four variables in `.env.local` are required — if any is missing the app shows a "Setup needed" screen naming the ones it needs rather than failing silently.
 
 ### 2. Create the Supabase project
 - Create a new project in the Supabase dashboard. Note the **Project URL** and the **anon** and **service_role** keys (Project Settings → API).
 - Enable email auth: Authentication → Providers → Email → enabled. (For quick testing, turn off "Confirm email" so you can log in immediately.)
 
 ### 3. Apply the database schema
-Either paste `supabase/migrations/0001_init.sql` into the Supabase SQL editor and run it, **or** use the CLI:
+Either paste the files in `supabase/migrations/` into the Supabase SQL editor and run them in order (`0001_init.sql`, then `0002_teacher_profile_trigger.sql`), **or** use the CLI:
 ```bash
 supabase link --project-ref <your-project-ref>
 supabase db push
@@ -150,6 +153,7 @@ Every teacher who signs up gets their own tag, timetable, locations, and attenda
 ```
 supabase/
   migrations/0001_init.sql        schema + RLS
+  migrations/0002_*.sql           auto-create the teacher profile on sign-up
   functions/checkin/index.ts      student check-in (geofence, time, device binding)
   functions/export/index.ts       teacher CSV export (JWT-scoped)
   functions/_shared/utils.ts      haversine, timezone, helpers
