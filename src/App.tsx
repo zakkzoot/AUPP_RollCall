@@ -12,6 +12,7 @@ import CheckIn from "./pages/CheckIn";
 import Login from "./pages/teacher/Login";
 import Dashboard from "./pages/teacher/Dashboard";
 import Timetable from "./pages/teacher/Timetable";
+import Classes from "./pages/teacher/Classes";
 import Locations from "./pages/teacher/Locations";
 import Tag from "./pages/teacher/Tag";
 
@@ -97,6 +98,14 @@ export default function App() {
           element={
             <RequireAuth>
               <Timetable />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/classes"
+          element={
+            <RequireAuth>
+              <Classes />
             </RequireAuth>
           }
         />

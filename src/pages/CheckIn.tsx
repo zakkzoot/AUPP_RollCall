@@ -30,6 +30,10 @@ const ERROR_COPY: Record<string, { title: string; body: string }> = {
     title: "ID already in use",
     body: "That student ID is registered on another device. Speak to your teacher — this can't be shared.",
   },
+  not_on_register: {
+    title: "Not on the register",
+    body: "That student ID isn't on the register for this lesson. Check you typed it correctly, or speak to your teacher.",
+  },
   location_required: {
     title: "Location needed",
     body: "Turn on location for this page, then tap the tag again.",
@@ -56,6 +60,9 @@ export default function CheckIn() {
   const [fullName, setFullName] = useState("");
   const [studentId, setStudentId] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // Students normally type only their ID and the register supplies the name.
+  // The name field appears only when the server says there is no register.
+  const [needName, setNeedName] = useState(false);
 
   // Step 1: get location on mount.
   useEffect(() => {
@@ -96,7 +103,7 @@ export default function CheckIn() {
           tag_code: tagCode,
           device_token: deviceToken,
           student_id: deviceToken ? null : studentId.trim(),
-          full_name: deviceToken ? null : fullName.trim(),
+          full_name: deviceToken || !needName ? null : fullName.trim(),
           lat: coords.lat,
           lng: coords.lng,
         }),
@@ -104,6 +111,12 @@ export default function CheckIn() {
       const data = await res.json();
 
       if (!res.ok || !data.ok) {
+        // No register for this lesson, so we do need a name after all.
+        if (data.error === "name_required") {
+          setNeedName(true);
+          setPhase("form");
+          return;
+        }
         setErrorKey(ERROR_COPY[data.error] ? data.error : "generic");
         setPhase("error");
         return;
@@ -150,6 +163,7 @@ export default function CheckIn() {
             studentId={studentId}
             setFullName={setFullName}
             setStudentId={setStudentId}
+            needName={needName}
             submitting={submitting}
             onSubmit={() => submit(null)}
           />
@@ -191,6 +205,7 @@ function RegisterForm({
   studentId,
   setFullName,
   setStudentId,
+  needName,
   submitting,
   onSubmit,
 }: {
@@ -198,10 +213,12 @@ function RegisterForm({
   studentId: string;
   setFullName: (v: string) => void;
   setStudentId: (v: string) => void;
+  needName: boolean;
   submitting: boolean;
   onSubmit: () => void;
 }) {
-  const canSubmit = fullName.trim().length > 1 && studentId.trim().length > 0;
+  const canSubmit =
+    studentId.trim().length > 0 && (!needName || fullName.trim().length > 1);
   return (
     <div className="w-full">
       <p className="text-red font-display font-semibold tracking-wide uppercase text-sm">
@@ -211,21 +228,12 @@ function RegisterForm({
         Set up this device
       </h1>
       <p className="text-mist/60 mt-3 leading-relaxed">
-        Enter your details once. After this, a single tap checks you in — this
-        device becomes yours.
+        {needName
+          ? "Your teacher hasn't imported a register for this lesson, so add your name this once."
+          : "Enter your student ID once. After this, a single tap checks you in — this device becomes yours."}
       </p>
 
       <div className="mt-8 space-y-4 text-left">
-        <div>
-          <label className="block text-sm text-mist/70 mb-1.5">Full name</label>
-          <input
-            value={fullName}
-            onChange={(e) => setFullName(e.target.value)}
-            autoComplete="name"
-            className="w-full bg-dusk border border-white/10 rounded-xl px-4 py-4 text-lg text-mist placeholder-mist/30 focus:outline-none focus:border-red focus:ring-1 focus:ring-red"
-            placeholder="Jane Doe"
-          />
-        </div>
         <div>
           <label className="block text-sm text-mist/70 mb-1.5">
             Student ID
@@ -233,10 +241,25 @@ function RegisterForm({
           <input
             value={studentId}
             onChange={(e) => setStudentId(e.target.value)}
+            autoFocus
             className="w-full bg-dusk border border-white/10 rounded-xl px-4 py-4 text-lg text-mist placeholder-mist/30 focus:outline-none focus:border-red focus:ring-1 focus:ring-red"
             placeholder="S12345"
           />
         </div>
+        {needName && (
+          <div>
+            <label className="block text-sm text-mist/70 mb-1.5">
+              Full name
+            </label>
+            <input
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              autoComplete="name"
+              className="w-full bg-dusk border border-white/10 rounded-xl px-4 py-4 text-lg text-mist placeholder-mist/30 focus:outline-none focus:border-red focus:ring-1 focus:ring-red"
+              placeholder="Jane Doe"
+            />
+          </div>
+        )}
       </div>
 
       <button

@@ -5,6 +5,7 @@ import { supabase } from "../lib/supabase";
 const NAV = [
   { to: "/dashboard", label: "Attendance" },
   { to: "/timetable", label: "Timetable" },
+  { to: "/classes", label: "Classes" },
   { to: "/locations", label: "Locations" },
   { to: "/tag", label: "My tag" },
 ];

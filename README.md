@@ -1,6 +1,6 @@
 # NFC Tap-In Attendance
 
-A self-hostable student attendance system. Each **teacher** gets one NFC tag. A student taps it on arrival; the system works out which lesson is running right now from the teacher's timetable, checks the student is physically there (geofence), and records attendance. First tap on a phone registers the student and binds them to that device — after that it's one tap, no typing.
+A self-hostable student attendance system. Each **teacher** gets one NFC tag. A student taps it on arrival; the system works out which lesson is running right now from the teacher's timetable, checks the student is physically there (geofence), and records attendance. First tap on a phone asks for a student ID, matches it to the class register to get the student's real name, and binds them to that device — after that it's one tap, no typing.
 
 Built to run entirely on **free tiers**: Supabase (database + auth + edge functions) and Vercel (hosting).
 
@@ -8,11 +8,12 @@ Built to run entirely on **free tiers**: Supabase (database + auth + edge functi
 
 ## Why NFC instead of a QR code
 
-A QR code can be screenshotted and sent to an absent friend. NFC can't be shared as easily — but the real protection is server-side, not the tag itself. Three checks run in the `checkin` Edge Function and cannot be bypassed from the browser:
+A QR code can be screenshotted and sent to an absent friend. NFC can't be shared as easily — but the real protection is server-side, not the tag itself. Four checks run in the `checkin` Edge Function and cannot be bypassed from the browser:
 
 1. **Device binding** — a student ID is locked to the first phone it registers on. Entering someone else's ID on your own phone is rejected (`id_already_bound`).
 2. **Geofence** — the tap is rejected unless the phone is within the lesson location's radius. Opening a saved link from home fails.
 3. **Time window** — a tap only counts during a scheduled lesson (with a short grace period before it starts).
+4. **Class register** — where a lesson is linked to a class, only IDs on that class's imported register can check in (`not_on_register`), and the name on the record comes from the register rather than from the student.
 
 Even if a student shares the check-in URL, the recipient must be a registered device, at the location, during the lesson. For a classroom this is more than enough. (If you ever need cryptographic guarantees, NTAG 424 DNA tags issue a unique code per tap — not required here.)
 
@@ -23,7 +24,7 @@ Even if a student shares the check-in URL, the recipient must be a registered de
 - **Frontend:** Vite + React + TypeScript + Tailwind, hosted on Vercel.
 - **Backend:** Supabase Postgres with Row Level Security. All student check-in traffic goes through a Supabase **Edge Function** using the service role key — students never touch the database directly. Teachers use the Supabase client with their own login; RLS confines them to their own rows.
 - **Maps:** Leaflet + OpenStreetMap (free, no API key).
-- **One tag per teacher**, enforced by a unique index. Each teacher owns a timetable of weekly recurring lessons, each pointing at either a saved location or a one-off location.
+- **One tag per teacher**, enforced by a unique index. Each teacher owns a timetable of weekly recurring lessons, each pointing at either a saved location or a one-off location, and optionally at a class whose register supplies student names.
 
 ```
 Student phone ──tap──> /t/<tag_code>  ──POST──> checkin Edge Function ──> Postgres
@@ -52,7 +53,7 @@ cp .env.example .env.local   # fill in once you have the values from steps 2 and
 - Enable email auth: Authentication → Providers → Email → enabled. (For quick testing, turn off "Confirm email" so you can log in immediately.)
 
 ### 3. Apply the database schema
-Either paste the files in `supabase/migrations/` into the Supabase SQL editor and run them in order (`0001_init.sql`, then `0002_teacher_profile_trigger.sql`), **or** use the CLI:
+Either paste the files in `supabase/migrations/` into the Supabase SQL editor and run them in numeric order (`0001_init.sql`, `0002_teacher_profile_trigger.sql`, `0003_class_registers.sql`), **or** use the CLI:
 ```bash
 supabase link --project-ref <your-project-ref>
 supabase db push
@@ -91,8 +92,9 @@ Never set the service_role key here — it belongs only in Edge Functions.
 ### 6. First run as a teacher
 1. Open your deployed site → **Create an account** → set your name and timezone (your timetable times are read in this zone).
 2. **Locations** → add the rooms you teach in. Drop a pin (or paste `lat, lng` from Google Maps) and set each room's radius.
-3. **Timetable** → add lessons one at a time, or **Import CSV** (download the template first).
-4. **My tag** → create your tag and copy its URL.
+3. **Classes** → add a class and import its student list (`student_id,full_name`). Do this before students tap for the first time — it's what puts the right name on the register.
+4. **Timetable** → add lessons one at a time, or **Import CSV** (download the template first). Link each lesson to its class.
+5. **My tag** → create your tag and copy its URL.
 
 ### 7. Write the NFC tag
 
@@ -111,11 +113,27 @@ The tag only ever stores the URL. There is no separate file to download — the 
 The browser's Web NFC write cannot set passwords or lock bits (that low-level tag config isn't exposed to web pages), so this protection step is always done in NFC Tools, once per tag.
 
 ### 8. Test
-Tap during a scheduled lesson at the right location → register once → tap again → instant check-in against the correct subject. Then try from home to confirm the geofence blocks you, and outside lesson hours to confirm the time window blocks you.
+Tap during a scheduled lesson at the right location → enter an ID from the register → confirm the name shown is the one you imported, not one the student typed → tap again → instant check-in against the correct subject. Then try from home to confirm the geofence blocks you, outside lesson hours to confirm the time window blocks you, and with an ID that isn't on the register to confirm it's turned away.
 
 ---
 
-## CSV import format
+## CSV import formats
+
+### Class registers
+
+Two columns, imported per class under **Classes**:
+
+```csv
+student_id,full_name
+S12345,Sokha Chan
+S12346,Dara Pich
+```
+
+- `student_id` is the school's own ID — whatever students will type on their first tap.
+- `full_name` is the spelling that lands on the attendance record. Students never type their own name, so this is the only place it comes from.
+- Rows already on the register are skipped, as are IDs repeated within one file.
+
+### Timetable
 
 Header row plus one example of each location style:
 
@@ -129,6 +147,21 @@ Field Trip Prep,Wed,11:00,12:00,,11.5564,104.9282,80
 - Use a **one-off location** by leaving `location_name` blank and filling all three `override_*` columns.
 - `day_of_week` accepts `Mon`/`Monday`/`0–6` (0 = Sunday). Times accept `09:00`, `9:00`, or `9am`.
 - Import validates every row and shows a preview; only valid rows are written. Exact duplicates are skipped.
+
+---
+
+## How names get onto the register
+
+A **class** is a named group with an imported register, and a timetable lesson can point at one. Several lessons — the same subject on different days — share a single class, so the list is imported once.
+
+At a student's first tap the server decides the name, not the student:
+
+- **The lesson has a class, and the ID is on its register** → the imported name is used. The student only ever typed an ID.
+- **The lesson has a class, and the ID isn't on it** → rejected with `not_on_register`. This is also what stops someone guessing an ID to get a friend marked present.
+- **The lesson has no class** → every register the teacher owns is searched, so names still resolve for a teacher who imported lists but hasn't linked the timetable yet.
+- **No register exists at all** → the student is asked for their name, as before. Nothing breaks if you never use classes.
+
+On every later tap the register is re-checked and the stored name corrected if it drifted, so students who registered by hand before their class was imported are cleaned up automatically. Renaming someone on the register renames them on future check-ins.
 
 ---
 
@@ -154,14 +187,16 @@ Every teacher who signs up gets their own tag, timetable, locations, and attenda
 supabase/
   migrations/0001_init.sql        schema + RLS
   migrations/0002_*.sql           auto-create the teacher profile on sign-up
+  migrations/0003_*.sql           classes + class registers, lessons.class_id
   functions/checkin/index.ts      student check-in (geofence, time, device binding)
   functions/export/index.ts       teacher CSV export (JWT-scoped)
   functions/_shared/utils.ts      haversine, timezone, helpers
 src/
   pages/CheckIn.tsx               the student-facing page
-  pages/teacher/                  login, dashboard, timetable, locations, tag
+  pages/teacher/                  login, dashboard, timetable, classes, locations, tag
   components/MapPicker.tsx        Leaflet pin + radius
   components/TimetableImport.tsx  CSV parse/validate/preview/commit
+  components/StudentImport.tsx    the same, for class registers
 ```
 
 ---
