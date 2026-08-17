@@ -93,7 +93,7 @@ Never set the service_role key here — it belongs only in Edge Functions.
 1. Open your deployed site → **Create an account** → set your name and timezone (your timetable times are read in this zone).
 2. **Locations** → add the rooms you teach in. Drop a pin (or paste `lat, lng` from Google Maps) and set each room's radius.
 3. **Classes** → add a class and import its student list (`student_id,full_name`). Do this before students tap for the first time — it's what puts the right name on the register.
-4. **Timetable** → add lessons one at a time, or **Import CSV** (download the template first). Link each lesson to its class.
+4. **Timetable** → **Import CSV** and drop in the university's schedule export unchanged, or add lessons one at a time. The import can create a class per course section for you, so steps 3 and 4 can be done in either order.
 5. **My tag** → create your tag and copy its URL.
 
 ### 7. Write the NFC tag
@@ -133,7 +133,23 @@ S12346,Dara Pich
 - `full_name` is the spelling that lands on the attendance record. Students never type their own name, so this is the only place it comes from.
 - Rows already on the register are skipped, as are IDs repeated within one file.
 
-### Timetable
+### Timetable — university schedule export
+
+The university's own export is accepted unchanged; the layout is detected from the header row. A copy lives at `samples/university-schedule-example.csv`.
+
+```csv
+Semester,Course,Course Title,Section,Days,Start Time,End Time,Room,Start Date
+Fall 2026,COMM 103,Oral Communication,6,Tuesday; Thursday,3:30 PM,5:00 PM,Classroom D5,2026-08-17
+```
+
+- **One row becomes one lesson per day it meets.** `Tuesday; Thursday` produces two. Separators `;` `,` `/` `&`, the word "and", and compact forms like `MWF` or `TR` all work (`R` is Thursday, `U` Sunday).
+- **Subject** is assembled as `COMM 103 Oral Communication (Sec 6)`, so two sections of one course stay distinct on the register.
+- **Times** accept 12-hour (`3:30 PM`) or 24-hour.
+- **Room** is matched to a saved location, ignoring a leading "Classroom"/"Room" — so `Classroom D5` finds a location named `D5`. Rooms with no match are listed in the preview, and you can create them in one step; they land on a default pin with a radius you choose and **must be placed on the Locations page before the geofence means anything**.
+- **A class is created per course section** (`COMM 103 Sec 6`) and linked to the lesson, ready for its student register. Switch this off in the preview if you don't want it.
+- `Semester` and `Start Date` are read but not stored — lessons repeat weekly until deleted, so clear last term's timetable before importing a new one.
+
+### Timetable — template format
 
 Header row plus one example of each location style:
 
@@ -197,6 +213,9 @@ src/
   components/MapPicker.tsx        Leaflet pin + radius
   components/TimetableImport.tsx  CSV parse/validate/preview/commit
   components/StudentImport.tsx    the same, for class registers
+  lib/timetableCsv.ts             both timetable CSV shapes, parsed and validated
+samples/
+  university-schedule-example.csv the university export layout
 ```
 
 ---

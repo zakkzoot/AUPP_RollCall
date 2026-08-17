@@ -175,6 +175,7 @@ export default function Timetable() {
           <TimetableImport
             teacherId={teacherId}
             locations={locations}
+            classes={classes}
             existing={lessons}
             onImported={() => {
               setShowImport(false);

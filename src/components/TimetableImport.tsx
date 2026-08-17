@@ -1,194 +1,48 @@
 import { useState } from "react";
-import Papa from "papaparse";
 import { supabase } from "../lib/supabase";
-import { Lesson, Location } from "../lib/types";
-
-interface RawRow {
-  subject?: string;
-  day_of_week?: string;
-  start_time?: string;
-  end_time?: string;
-  location_name?: string;
-  override_lat?: string;
-  override_lng?: string;
-  override_radius_m?: string;
-}
-
-interface ParsedRow {
-  status: "ok" | "error" | "duplicate";
-  message?: string;
-  payload?: Record<string, unknown>;
-  raw: RawRow;
-}
-
-const DOW_MAP: Record<string, number> = {
-  sun: 0, sunday: 0, "0": 0,
-  mon: 1, monday: 1, "1": 1,
-  tue: 2, tues: 2, tuesday: 2, "2": 2,
-  wed: 3, weds: 3, wednesday: 3, "3": 3,
-  thu: 4, thur: 4, thurs: 4, thursday: 4, "4": 4,
-  fri: 5, friday: 5, "5": 5,
-  sat: 6, saturday: 6, "6": 6,
-};
-
-function normDow(v: string): number | null {
-  const k = v.trim().toLowerCase();
-  return k in DOW_MAP ? DOW_MAP[k] : null;
-}
-
-function normTime(v: string): string | null {
-  const s = v.trim().toLowerCase().replace(/\s/g, "");
-  // 9am / 9:30pm
-  const ampm = s.match(/^(\d{1,2})(?::(\d{2}))?(am|pm)$/);
-  if (ampm) {
-    let h = parseInt(ampm[1], 10);
-    const m = ampm[2] ? parseInt(ampm[2], 10) : 0;
-    if (ampm[3] === "pm" && h !== 12) h += 12;
-    if (ampm[3] === "am" && h === 12) h = 0;
-    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`;
-  }
-  // 24h HH:MM or H:MM
-  const hhmm = s.match(/^(\d{1,2}):(\d{2})$/);
-  if (hhmm) {
-    const h = parseInt(hhmm[1], 10);
-    const m = parseInt(hhmm[2], 10);
-    if (h > 23 || m > 59) return null;
-    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`;
-  }
-  return null;
-}
-
-function toMin(t: string) {
-  const [h, m] = t.split(":");
-  return parseInt(h, 10) * 60 + parseInt(m, 10);
-}
+import { Class, Lesson, Location } from "../lib/types";
+import {
+  ParsedRow,
+  normRoom,
+  parseScheduleCsv,
+} from "../lib/timetableCsv";
 
 const TEMPLATE =
   "subject,day_of_week,start_time,end_time,location_name,override_lat,override_lng,override_radius_m\n" +
   "GCSE Biology,Mon,09:00,10:00,Science Block Room 4,,,\n" +
   "Field Trip Prep,Wed,11:00,12:00,,11.5564,104.9282,80\n";
 
+// Where auto-created rooms land until the teacher places them.
+const FALLBACK_CENTER = { lat: 11.5564, lng: 104.9282 };
+
 export default function TimetableImport({
   teacherId,
   locations,
+  classes,
   existing,
   onImported,
 }: {
   teacherId: string;
   locations: Location[];
+  classes: Class[];
   existing: Lesson[];
   onImported: () => void;
 }) {
   const [rows, setRows] = useState<ParsedRow[] | null>(null);
+  const [format, setFormat] = useState<"native" | "university" | null>(null);
   const [committing, setCommitting] = useState(false);
-
-  function locByName(name: string): Location | undefined {
-    const n = name.trim().toLowerCase();
-    return locations.find((l) => l.name.toLowerCase() === n);
-  }
-
-  function isDuplicate(p: Record<string, unknown>): boolean {
-    return existing.some(
-      (e) =>
-        e.subject.toLowerCase() === String(p.subject).toLowerCase() &&
-        e.day_of_week === p.day_of_week &&
-        e.start_time === p.start_time &&
-        e.end_time === p.end_time &&
-        (e.location_id ?? null) === (p.location_id ?? null),
-    );
-  }
-
-  function validate(raw: RawRow): ParsedRow {
-    const subject = (raw.subject ?? "").trim();
-    if (!subject) return { status: "error", message: "missing subject", raw };
-
-    const dow = normDow(raw.day_of_week ?? "");
-    if (dow === null)
-      return { status: "error", message: `bad day_of_week "${raw.day_of_week}"`, raw };
-
-    const start = normTime(raw.start_time ?? "");
-    const end = normTime(raw.end_time ?? "");
-    if (!start) return { status: "error", message: `bad start_time "${raw.start_time}"`, raw };
-    if (!end) return { status: "error", message: `bad end_time "${raw.end_time}"`, raw };
-    if (toMin(end) <= toMin(start))
-      return { status: "error", message: "end_time must be after start_time", raw };
-
-    const locName = (raw.location_name ?? "").trim();
-    const hasOverride =
-      (raw.override_lat ?? "").trim() !== "" ||
-      (raw.override_lng ?? "").trim() !== "" ||
-      (raw.override_radius_m ?? "").trim() !== "";
-
-    let payload: Record<string, unknown> = {
-      teacher_id: teacherId,
-      subject,
-      day_of_week: dow,
-      start_time: start,
-      end_time: end,
-      active: true,
-    };
-
-    if (locName && hasOverride) {
-      return {
-        status: "error",
-        message: "set either a location name OR an override, not both",
-        raw,
-      };
-    }
-
-    if (locName) {
-      const loc = locByName(locName);
-      if (!loc)
-        return {
-          status: "error",
-          message: `unknown location "${locName}" — create it in Locations first`,
-          raw,
-        };
-      payload = {
-        ...payload,
-        location_id: loc.id,
-        override_lat: null,
-        override_lng: null,
-        override_radius_m: null,
-      };
-    } else if (hasOverride) {
-      const lat = Number(raw.override_lat);
-      const lng = Number(raw.override_lng);
-      const rad = Number(raw.override_radius_m);
-      if (isNaN(lat) || isNaN(lng) || isNaN(rad))
-        return {
-          status: "error",
-          message: "override_lat, override_lng and override_radius_m must all be numbers",
-          raw,
-        };
-      payload = {
-        ...payload,
-        location_id: null,
-        override_lat: lat,
-        override_lng: lng,
-        override_radius_m: rad,
-      };
-    } else {
-      return {
-        status: "error",
-        message: "no location — give a location_name or an override",
-        raw,
-      };
-    }
-
-    if (isDuplicate(payload)) {
-      return { status: "duplicate", message: "already in timetable — skipped", raw, payload };
-    }
-    return { status: "ok", payload, raw };
-  }
+  const [createRooms, setCreateRooms] = useState(false);
+  const [roomRadius, setRoomRadius] = useState(60);
+  const [createClasses, setCreateClasses] = useState(true);
 
   function handleText(text: string) {
-    const result = Papa.parse<RawRow>(text, {
-      header: true,
-      skipEmptyLines: true,
-      transformHeader: (h) => h.trim().toLowerCase(),
+    const { format: detected, rows: parsed } = parseScheduleCsv(text, {
+      locations,
+      existing,
     });
-    setRows((result.data ?? []).map(validate));
+    setFormat(detected);
+    setRows(parsed);
+    setCreateRooms(false);
   }
 
   function handleFile(file: File) {
@@ -197,22 +51,98 @@ export default function TimetableImport({
     reader.readAsText(file);
   }
 
+  const missingRooms = [
+    ...new Set(
+      (rows ?? [])
+        .filter((r) => r.status === "needs_room" && r.draft?.roomName)
+        .map((r) => r.draft!.roomName!),
+    ),
+  ];
+
+  const usable = (rows ?? []).filter(
+    (r) => r.status === "ok" || (createRooms && r.status === "needs_room"),
+  );
+  const newClassNames = createClasses
+    ? [
+        ...new Set(
+          usable
+            .map((r) => r.draft?.className)
+            .filter((n): n is string => !!n)
+            .filter((n) => !classes.some((c) => c.name.toLowerCase() === n.toLowerCase())),
+        ),
+      ]
+    : [];
+
   async function commit() {
-    if (!rows) return;
-    const toInsert = rows.filter((r) => r.status === "ok").map((r) => r.payload!);
-    if (toInsert.length === 0) return;
+    if (usable.length === 0) return;
     setCommitting(true);
-    const { error } = await supabase.from("lessons").insert(toInsert as any);
-    setCommitting(false);
-    if (!error) {
+    try {
+      // 1. Create any rooms the teacher opted to add, then resolve names to ids.
+      const roomToId = new Map(locations.map((l) => [normRoom(l.name), l.id]));
+      if (createRooms && missingRooms.length) {
+        const { data, error } = await supabase
+          .from("locations")
+          .insert(
+            missingRooms.map((name) => ({
+              teacher_id: teacherId,
+              name,
+              lat: FALLBACK_CENTER.lat,
+              lng: FALLBACK_CENTER.lng,
+              radius_m: roomRadius,
+            })),
+          )
+          .select("id, name");
+        if (error) throw new Error(`Could not create rooms: ${error.message}`);
+        for (const l of data ?? []) roomToId.set(normRoom(l.name), l.id);
+      }
+
+      // 2. Create a class per course section so registers have something to hang on.
+      const classToId = new Map(classes.map((c) => [c.name.toLowerCase(), c.id]));
+      if (newClassNames.length) {
+        const { data, error } = await supabase
+          .from("classes")
+          .insert(newClassNames.map((name) => ({ teacher_id: teacherId, name })))
+          .select("id, name");
+        if (error) throw new Error(`Could not create classes: ${error.message}`);
+        for (const c of data ?? []) classToId.set(c.name.toLowerCase(), c.id);
+      }
+
+      // 3. The lessons themselves.
+      const payloads = usable.map((r) => {
+        const d = r.draft!;
+        const locationId = d.roomName ? (roomToId.get(normRoom(d.roomName)) ?? null) : null;
+        return {
+          teacher_id: teacherId,
+          subject: d.subject,
+          day_of_week: d.dow,
+          start_time: d.start,
+          end_time: d.end,
+          active: true,
+          class_id:
+            createClasses && d.className
+              ? (classToId.get(d.className.toLowerCase()) ?? null)
+              : null,
+          location_id: d.override ? null : locationId,
+          override_lat: d.override?.lat ?? null,
+          override_lng: d.override?.lng ?? null,
+          override_radius_m: d.override?.radius ?? null,
+        };
+      });
+
+      const { error } = await supabase.from("lessons").insert(payloads as any);
+      if (error) throw new Error(`Import failed: ${error.message}`);
+
       setRows(null);
+      setFormat(null);
       onImported();
-    } else {
-      alert(`Import failed: ${error.message}`);
+    } catch (e: any) {
+      alert(e.message ?? "Import failed.");
+    } finally {
+      setCommitting(false);
     }
   }
 
-  const okCount = rows?.filter((r) => r.status === "ok").length ?? 0;
+  const errorCount = (rows ?? []).filter((r) => r.status === "error").length;
 
   return (
     <div className="bg-white border border-slate-200 rounded-xl p-6">
@@ -234,6 +164,12 @@ export default function TimetableImport({
         </button>
       </div>
 
+      <p className="mt-2 text-sm text-slate-500">
+        Takes the university's teaching schedule export as-is — a section meeting
+        on two days becomes two lessons — or the simpler template format. The
+        layout is detected from the header row.
+      </p>
+
       <div className="mt-4 grid gap-3">
         <input
           type="file"
@@ -244,7 +180,7 @@ export default function TimetableImport({
         <p className="text-xs text-slate-400">— or paste rows below —</p>
         <textarea
           rows={4}
-          placeholder="subject,day_of_week,start_time,end_time,location_name,..."
+          placeholder="Semester,Course,Course Title,Section,Days,Start Time,End Time,Room,Start Date"
           onChange={(e) => e.target.value.trim() && handleText(e.target.value)}
           className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono"
         />
@@ -252,54 +188,146 @@ export default function TimetableImport({
 
       {rows && (
         <div className="mt-5">
-          <table className="w-full text-sm border border-slate-200 rounded-lg overflow-hidden">
-            <thead className="bg-slate-50 text-slate-500 text-left">
-              <tr>
-                <th className="px-3 py-2">Row</th>
-                <th className="px-3 py-2">Subject</th>
-                <th className="px-3 py-2">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r, i) => (
-                <tr
-                  key={i}
-                  className={`border-t border-slate-100 ${
-                    r.status === "error"
-                      ? "bg-halt/5"
-                      : r.status === "duplicate"
-                        ? "bg-slate-50"
-                        : ""
-                  }`}
-                >
-                  <td className="px-3 py-2 text-slate-400">{i + 1}</td>
-                  <td className="px-3 py-2">{r.raw.subject || "—"}</td>
-                  <td className="px-3 py-2">
-                    {r.status === "ok" && (
-                      <span className="text-signal font-medium">Ready</span>
-                    )}
-                    {r.status === "duplicate" && (
-                      <span className="text-slate-400">{r.message}</span>
-                    )}
-                    {r.status === "error" && (
-                      <span className="text-halt">{r.message}</span>
-                    )}
-                  </td>
+          <div className="flex items-center gap-3 flex-wrap text-sm">
+            <span className="bg-slate-100 text-slate-600 rounded-full px-3 py-1">
+              {format === "university"
+                ? "University schedule export"
+                : "Template format"}
+            </span>
+            <span className="text-slate-500">
+              {usable.length} lesson{usable.length === 1 ? "" : "s"} ready
+              {errorCount > 0 && ` · ${errorCount} with errors`}
+            </span>
+          </div>
+
+          {format === "university" && (
+            <p className="mt-3 text-xs text-slate-400">
+              Semester and Start Date are read but not stored — lessons repeat
+              weekly until you delete them, so clear last term's timetable before
+              importing a new one.
+            </p>
+          )}
+
+          {missingRooms.length > 0 && (
+            <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-sm">
+              <p className="text-amber-900 font-medium">
+                {missingRooms.length} room{missingRooms.length === 1 ? "" : "s"} in
+                this file {missingRooms.length === 1 ? "isn't" : "aren't"} saved as
+                a location yet
+              </p>
+              <p className="text-amber-800 mt-1">{missingRooms.join(", ")}</p>
+              <label className="flex items-start gap-2 mt-3 text-amber-900">
+                <input
+                  type="checkbox"
+                  checked={createRooms}
+                  onChange={(e) => setCreateRooms(e.target.checked)}
+                  className="mt-1"
+                />
+                <span>
+                  Create them now, then place the pins on the Locations page.
+                  They all start at the Phnom Penh default with a{" "}
+                  <input
+                    type="number"
+                    min={5}
+                    max={5000}
+                    value={roomRadius}
+                    onChange={(e) => setRoomRadius(Number(e.target.value))}
+                    onClick={(e) => e.stopPropagation()}
+                    className="w-20 border border-amber-300 rounded px-2 py-0.5 mx-1"
+                  />
+                  m radius —{" "}
+                  <strong>
+                    the geofence won't be meaningful until each pin is moved.
+                  </strong>
+                </span>
+              </label>
+            </div>
+          )}
+
+          {format === "university" && (
+            <label className="flex items-start gap-2 mt-4 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={createClasses}
+                onChange={(e) => setCreateClasses(e.target.checked)}
+                className="mt-1"
+              />
+              <span>
+                Create a class for each course section, so you can import its
+                student register.
+                {newClassNames.length > 0 && (
+                  <span className="text-slate-400">
+                    {" "}
+                    Adds: {newClassNames.join(", ")}.
+                  </span>
+                )}
+              </span>
+            </label>
+          )}
+
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full text-sm border border-slate-200 rounded-lg">
+              <thead className="bg-slate-50 text-slate-500 text-left">
+                <tr>
+                  <th className="px-3 py-2">Row</th>
+                  <th className="px-3 py-2">Lesson</th>
+                  <th className="px-3 py-2">When</th>
+                  <th className="px-3 py-2">Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => {
+                  const willImport =
+                    r.status === "ok" || (createRooms && r.status === "needs_room");
+                  return (
+                    <tr
+                      key={i}
+                      className={`border-t border-slate-100 ${
+                        r.status === "error"
+                          ? "bg-halt/5"
+                          : r.status === "duplicate"
+                            ? "bg-slate-50"
+                            : ""
+                      }`}
+                    >
+                      <td className="px-3 py-2 text-slate-400">{r.sourceRow}</td>
+                      <td className="px-3 py-2">{r.label}</td>
+                      <td className="px-3 py-2 text-slate-500 whitespace-nowrap">
+                        {r.detail || "—"}
+                      </td>
+                      <td className="px-3 py-2">
+                        {willImport ? (
+                          <span className="text-signal font-medium">Ready</span>
+                        ) : r.status === "needs_room" ? (
+                          <span className="text-amber-700">{r.message}</span>
+                        ) : r.status === "duplicate" ? (
+                          <span className="text-slate-400">{r.message}</span>
+                        ) : (
+                          <span className="text-halt">{r.message}</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
 
           <div className="mt-4 flex items-center gap-3">
             <button
               onClick={commit}
-              disabled={okCount === 0 || committing}
+              disabled={usable.length === 0 || committing}
               className="bg-navy text-white font-medium rounded-lg px-5 py-2.5 disabled:opacity-40"
             >
-              {committing ? "Importing…" : `Import ${okCount} lesson${okCount === 1 ? "" : "s"}`}
+              {committing
+                ? "Importing…"
+                : `Import ${usable.length} lesson${usable.length === 1 ? "" : "s"}`}
             </button>
             <button
-              onClick={() => setRows(null)}
+              onClick={() => {
+                setRows(null);
+                setFormat(null);
+              }}
               className="text-slate-500 px-3 py-2.5"
             >
               Clear
