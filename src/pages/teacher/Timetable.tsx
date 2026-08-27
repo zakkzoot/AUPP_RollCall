@@ -3,7 +3,7 @@ import TeacherShell from "../../components/TeacherShell";
 import TimetableImport from "../../components/TimetableImport";
 import MapPicker from "../../components/MapPicker";
 import { supabase } from "../../lib/supabase";
-import { DOW_LABELS, Lesson, Location } from "../../lib/types";
+import { Class, DOW_LABELS, Lesson, Location } from "../../lib/types";
 
 const DEFAULT_CENTER = { lat: 11.5564, lng: 104.9282 };
 
@@ -13,6 +13,7 @@ type Draft = {
   day_of_week: number;
   start_time: string;
   end_time: string;
+  class_id: string;
   useOverride: boolean;
   location_id: string;
   override_lat: number;
@@ -25,6 +26,7 @@ const emptyDraft = (): Draft => ({
   day_of_week: 1,
   start_time: "09:00",
   end_time: "10:00",
+  class_id: "",
   useOverride: false,
   location_id: "",
   override_lat: DEFAULT_CENTER.lat,
@@ -35,6 +37,7 @@ const emptyDraft = (): Draft => ({
 export default function Timetable() {
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
+  const [classes, setClasses] = useState<Class[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [teacherId, setTeacherId] = useState<string>("");
   const [showImport, setShowImport] = useState(false);
@@ -42,7 +45,7 @@ export default function Timetable() {
   async function load() {
     const { data: l } = await supabase
       .from("lessons")
-      .select("*, locations(name)")
+      .select("*, locations(name), classes(name)")
       .order("day_of_week")
       .order("start_time");
     setLessons((l as any) ?? []);
@@ -51,6 +54,11 @@ export default function Timetable() {
       .select("*")
       .order("name");
     setLocations((locs as any) ?? []);
+    const { data: cls } = await supabase
+      .from("classes")
+      .select("id, teacher_id, name")
+      .order("name");
+    setClasses((cls as any) ?? []);
   }
 
   useEffect(() => {
@@ -71,6 +79,7 @@ export default function Timetable() {
       day_of_week: l.day_of_week,
       start_time: l.start_time.slice(0, 5),
       end_time: l.end_time.slice(0, 5),
+      class_id: l.class_id ?? "",
       useOverride: l.location_id === null,
       location_id: l.location_id ?? locations[0]?.id ?? "",
       override_lat: l.override_lat ?? DEFAULT_CENTER.lat,
@@ -87,6 +96,7 @@ export default function Timetable() {
       day_of_week: draft.day_of_week,
       start_time: `${draft.start_time}:00`,
       end_time: `${draft.end_time}:00`,
+      class_id: draft.class_id || null,
       active: true,
     };
     const payload: Record<string, unknown> = draft.useOverride
@@ -165,6 +175,7 @@ export default function Timetable() {
           <TimetableImport
             teacherId={teacherId}
             locations={locations}
+            classes={classes}
             existing={lessons}
             onImported={() => {
               setShowImport(false);
@@ -226,6 +237,27 @@ export default function Timetable() {
                 />
               </div>
             </div>
+          </div>
+
+          <div className="mt-5 border-t border-slate-100 pt-5">
+            <label className="block text-sm text-slate-600 mb-1">Class</label>
+            <select
+              value={draft.class_id}
+              onChange={(e) => setDraft({ ...draft, class_id: e.target.value })}
+              className="w-full border border-slate-300 rounded-lg px-3 py-2.5"
+            >
+              <option value="">No class — students type their own name</option>
+              {classes.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-slate-400 mt-1">
+              {classes.length === 0
+                ? "Create a class under Classes to attach a register."
+                : "Attach a register so a student's ID resolves to the name you imported."}
+            </p>
           </div>
 
           <div className="mt-5 border-t border-slate-100 pt-5">
@@ -334,6 +366,7 @@ export default function Timetable() {
                         {l.location_id
                           ? (l.locations?.name ?? "saved location")
                           : "one-off location"}
+                        {l.classes?.name ? ` · ${l.classes.name}` : " · no class"}
                       </p>
                     </div>
                     <div className="flex gap-2">

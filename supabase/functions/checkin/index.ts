@@ -61,7 +61,7 @@ Deno.serve(async (req) => {
   const { data: lessons } = await supabase
     .from("lessons")
     .select(
-      "id, subject, start_time, end_time, day_of_week, active, " +
+      "id, subject, start_time, end_time, day_of_week, active, class_id, " +
         "location_id, override_lat, override_lng, override_radius_m, " +
         "locations(lat, lng, radius_m)",
     )
@@ -106,7 +106,48 @@ Deno.serve(async (req) => {
     return json({ error: "out_of_range", distance_m: Math.round(distance) }, 403);
   }
 
-  // 5. Identify student (device binding)
+  // 5. Which register applies to this lesson?
+  //
+  // A lesson linked to a class uses that class's register. A lesson with no
+  // class falls back to every register this teacher owns, so names still
+  // resolve for a teacher who imported lists but hasn't linked the timetable
+  // to them yet. Both cases collapse to a list of class ids to search.
+  let registerClassIds: string[] = [];
+  if (lesson.class_id) {
+    registerClassIds = [lesson.class_id];
+  } else {
+    const { data: ownClasses } = await supabase
+      .from("classes")
+      .select("id")
+      .eq("teacher_id", tag.teacher_id);
+    registerClassIds = (ownClasses ?? []).map((c: any) => c.id);
+  }
+
+  // The official name for an ID, or null if it isn't on the register.
+  async function lookupOnRegister(id: string): Promise<string | null> {
+    if (registerClassIds.length === 0) return null;
+    const { data } = await supabase
+      .from("class_students")
+      .select("full_name")
+      .in("class_id", registerClassIds)
+      .eq("student_id", id)
+      .limit(1)
+      .maybeSingle();
+    return data?.full_name ?? null;
+  }
+
+  // Whether a register exists at all. Decides between turning an unknown ID
+  // away and falling back to a student-typed name.
+  async function registerHasAnyone(): Promise<boolean> {
+    if (registerClassIds.length === 0) return false;
+    const { count } = await supabase
+      .from("class_students")
+      .select("id", { count: "exact", head: true })
+      .in("class_id", registerClassIds);
+    return (count ?? 0) > 0;
+  }
+
+  // 6. Identify student (device binding)
   let student: any = null;
   let mintedToken: string | null = null;
   let status = "ok";
@@ -126,13 +167,42 @@ Deno.serve(async (req) => {
         status = "flagged";
         flagReason = "device_reused_different_id";
       }
+
+      // Keep the register as the source of truth for the name. Corrects anyone
+      // who registered with a self-typed name before their class was imported.
+      const official = await lookupOnRegister(found.student_id);
+      if (official && official !== found.full_name) {
+        await supabase
+          .from("students")
+          .update({ full_name: official })
+          .eq("id", found.id);
+        student.full_name = official;
+      }
     }
   }
 
   if (!student) {
-    // New device (or no token) => first registration. Require id + name.
-    if (!student_id || !full_name) {
+    // New device (or no token) => first registration.
+    if (!student_id) {
       return json({ error: "registration_required" }, 400);
+    }
+
+    // The register decides the name, so a student never types their own.
+    const official = await lookupOnRegister(student_id);
+    let name = official;
+
+    if (!name) {
+      if (await registerHasAnyone()) {
+        // There is a register and this ID isn't on it. Turning them away here is
+        // the point of having one — and it stops a guessed ID getting anyone in.
+        return json({ error: "not_on_register" }, 403);
+      }
+      // No register imported yet: fall back to a typed name, asking for it if
+      // the phone hasn't sent one.
+      if (!full_name) {
+        return json({ error: "name_required" }, 400);
+      }
+      name = full_name;
     }
 
     // Is this student_id already bound to a different device?
@@ -151,7 +221,7 @@ Deno.serve(async (req) => {
       .from("students")
       .insert({
         student_id,
-        full_name,
+        full_name: name,
         device_token: mintedToken,
       })
       .select("id, full_name, student_id")
@@ -163,7 +233,7 @@ Deno.serve(async (req) => {
     student = created;
   }
 
-  // 6. Record the check-in
+  // 7. Record the check-in
   const { data: checkin, error: ciErr } = await supabase
     .from("checkins")
     .insert({
@@ -184,7 +254,7 @@ Deno.serve(async (req) => {
     return json({ error: "could_not_record" }, 500);
   }
 
-  // 7. Response
+  // 8. Response
   return json({
     ok: true,
     device_token: mintedToken ?? device_token,
