@@ -6,10 +6,8 @@ import {
   json,
   localDowAndMinutes,
   mintDeviceToken,
-  timeToMinutes,
+  selectLesson,
 } from "../_shared/utils.ts";
-
-const GRACE_MIN = 10; // allow tapping this many minutes before a lesson starts
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -69,23 +67,13 @@ Deno.serve(async (req) => {
     .eq("day_of_week", nowLocal.dow)
     .eq("active", true);
 
-  const candidates = (lessons ?? []).filter((l: any) => {
-    const start = timeToMinutes(l.start_time) - GRACE_MIN;
-    const end = timeToMinutes(l.end_time);
-    return nowLocal.minutes >= start && nowLocal.minutes <= end;
-  });
+  // Grace either side of the scheduled time; a lesson in session beats one
+  // that is only within grace. See selectLesson in _shared/utils.ts.
+  const lesson: any = selectLesson((lessons ?? []) as any[], nowLocal.minutes);
 
-  if (candidates.length === 0) {
+  if (!lesson) {
     return json({ error: "no_active_lesson" }, 403);
   }
-
-  // If several overlap, pick the one whose start is nearest to now.
-  candidates.sort(
-    (a: any, b: any) =>
-      Math.abs(timeToMinutes(a.start_time) - nowLocal.minutes) -
-      Math.abs(timeToMinutes(b.start_time) - nowLocal.minutes),
-  );
-  const lesson: any = candidates[0];
 
   // 3. Location + radius for this lesson
   const loc = lesson.location_id
