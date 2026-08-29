@@ -70,3 +70,70 @@ export function timeToMinutes(t: string): number {
 export function mintDeviceToken(): string {
   return crypto.randomUUID() + crypto.randomUUID().replace(/-/g, "");
 }
+
+// ---------------------------------------------------------------------------
+// Which lesson does a tap at this moment belong to?
+//
+// Taps are accepted for a grace period either side of the scheduled time, so
+// students arriving early or packing up late still register. Two-sided grace
+// makes back-to-back lessons overlap, so the choice between them matters:
+//
+//   1. A lesson actually in session always wins. Grace never steals a tap from
+//      a class that is genuinely running.
+//   2. Otherwise the nearest edge wins — just-ended beats about-to-start, which
+//      is what you want for a student leaving the room they were in.
+//
+// Kept here, and pure, so the rule can be tested against a real timetable.
+// ---------------------------------------------------------------------------
+
+export const GRACE_BEFORE_MIN = 15; // tap this many minutes before the start
+export const GRACE_AFTER_MIN = 15;  // ...and this many after the end
+
+export interface SchedulableLesson {
+  start_time: string;
+  end_time: string;
+}
+
+/** Minutes from `now` to the lesson's scheduled window; 0 while in session. */
+export function minutesFromWindow(
+  lesson: SchedulableLesson,
+  nowMinutes: number,
+): number {
+  const start = timeToMinutes(lesson.start_time);
+  const end = timeToMinutes(lesson.end_time);
+  if (nowMinutes < start) return start - nowMinutes;
+  if (nowMinutes > end) return nowMinutes - end;
+  return 0;
+}
+
+export function isInSession(
+  lesson: SchedulableLesson,
+  nowMinutes: number,
+): boolean {
+  return minutesFromWindow(lesson, nowMinutes) === 0;
+}
+
+/**
+ * The lesson a tap at `nowMinutes` counts toward, or null if none is close
+ * enough. `lessons` should already be filtered to the right teacher and day.
+ */
+export function selectLesson<T extends SchedulableLesson>(
+  lessons: T[],
+  nowMinutes: number,
+  graceBefore = GRACE_BEFORE_MIN,
+  graceAfter = GRACE_AFTER_MIN,
+): T | null {
+  const candidates = lessons.filter((l) => {
+    const start = timeToMinutes(l.start_time) - graceBefore;
+    const end = timeToMinutes(l.end_time) + graceAfter;
+    return nowMinutes >= start && nowMinutes <= end;
+  });
+  if (candidates.length === 0) return null;
+
+  return candidates.slice().sort((a, b) => {
+    const aIn = isInSession(a, nowMinutes) ? 0 : 1;
+    const bIn = isInSession(b, nowMinutes) ? 0 : 1;
+    if (aIn !== bIn) return aIn - bIn;
+    return minutesFromWindow(a, nowMinutes) - minutesFromWindow(b, nowMinutes);
+  })[0];
+}

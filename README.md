@@ -12,7 +12,7 @@ A QR code can be screenshotted and sent to an absent friend. NFC can't be shared
 
 1. **Device binding** — a student ID is locked to the first phone it registers on. Entering someone else's ID on your own phone is rejected (`id_already_bound`).
 2. **Geofence** — the tap is rejected unless the phone is within the lesson location's radius. Opening a saved link from home fails.
-3. **Time window** — a tap only counts during a scheduled lesson (with a short grace period before it starts).
+3. **Time window** — a tap only counts during a scheduled lesson, or within a 15-minute grace period either side of it. Taps outside that are rejected (`no_active_lesson`).
 4. **Class register** — where a lesson is linked to a class, only IDs on that class's imported register can check in (`not_on_register`), and the name on the record comes from the register rather than from the student.
 
 Even if a student shares the check-in URL, the recipient must be a registered device, at the location, during the lesson. For a classroom this is more than enough. (If you ever need cryptographic guarantees, NTAG 424 DNA tags issue a unique code per tap — not required here.)
@@ -64,7 +64,7 @@ supabase db push
 supabase functions deploy checkin
 supabase functions deploy export
 ```
-`SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` are injected into Edge Functions automatically — no secrets to set. (`GRACE_MIN`, the pre-lesson grace period, is a constant in `checkin/index.ts` if you want to change it.)
+`SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` are injected into Edge Functions automatically — no secrets to set. (`GRACE_BEFORE_MIN` and `GRACE_AFTER_MIN` in `functions/_shared/utils.ts` set the grace either side of a lesson; both default to 15 minutes.)
 
 Your function URLs will be:
 ```
@@ -113,7 +113,7 @@ The tag only ever stores the URL. There is no separate file to download — the 
 The browser's Web NFC write cannot set passwords or lock bits (that low-level tag config isn't exposed to web pages), so this protection step is always done in NFC Tools, once per tag.
 
 ### 8. Test
-Tap during a scheduled lesson at the right location → enter an ID from the register → confirm the name shown is the one you imported, not one the student typed → tap again → instant check-in against the correct subject. Then try from home to confirm the geofence blocks you, outside lesson hours to confirm the time window blocks you, and with an ID that isn't on the register to confirm it's turned away.
+Tap during a scheduled lesson at the right location (or within 15 minutes either side) → enter an ID from the register → confirm the name shown is the one you imported, not one the student typed → tap again → instant check-in against the correct subject. Then try from home to confirm the geofence blocks you, outside lesson hours to confirm the time window blocks you, and with an ID that isn't on the register to confirm it's turned away.
 
 ---
 
@@ -166,6 +166,19 @@ Field Trip Prep,Wed,11:00,12:00,,11.5564,104.9282,80
 
 ---
 
+## Time window and grace
+
+A tap counts while a lesson is running, plus **15 minutes either side** — early arrivals and students packing up both register. Change `GRACE_BEFORE_MIN` / `GRACE_AFTER_MIN` in `supabase/functions/_shared/utils.ts` if you want it tighter or looser.
+
+Two-sided grace makes back-to-back lessons overlap, so `selectLesson` decides between them:
+
+- **A lesson actually in session always wins.** Grace never takes a tap from a class that is genuinely running.
+- **Otherwise the nearest edge wins.** Between a class that just ended and one about to start, the just-ended one holds the tap until the midpoint of the gap. A student leaving at 15:16 is marked for the lesson they were in, not the one starting at 15:30 in another room.
+
+`selectLesson` is pure and lives in `_shared/utils.ts` so this can be exercised against a real timetable rather than only in production.
+
+---
+
 ## How names get onto the register
 
 A **class** is a named group with an imported register, and a timetable lesson can point at one. Several lessons — the same subject on different days — share a single class, so the list is imported once.
@@ -206,7 +219,7 @@ supabase/
   migrations/0003_*.sql           classes + class registers, lessons.class_id
   functions/checkin/index.ts      student check-in (geofence, time, device binding)
   functions/export/index.ts       teacher CSV export (JWT-scoped)
-  functions/_shared/utils.ts      haversine, timezone, helpers
+  functions/_shared/utils.ts      haversine, timezone, lesson selection + grace
 src/
   pages/CheckIn.tsx               the student-facing page
   pages/teacher/                  login, dashboard, timetable, classes, locations, tag
