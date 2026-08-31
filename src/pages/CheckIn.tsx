@@ -50,6 +50,10 @@ const ERROR_COPY: Record<string, { title: string; body: string }> = {
     title: "Couldn't set up this device",
     body: "Your ID looks fine, but the device couldn't be registered. Show your teacher this screen — re-tapping won't help.",
   },
+  registration_required: {
+    title: "Set this device up again",
+    body: "This device isn't recognised any more. Tap the tag once more and enter your student ID.",
+  },
   generic: {
     title: "Something went wrong",
     body: "Couldn't check you in. Try tapping the tag once more.",
@@ -147,6 +151,15 @@ export default function CheckIn() {
         // No register for this lesson, so we do need a name after all.
         if (data?.error === "name_required") {
           setNeedName(true);
+          setPhase("form");
+          return;
+        }
+
+        // The stored token doesn't match any student — the row it pointed at is
+        // gone. Drop it and let them register again, rather than stranding the
+        // phone on an error it can never tap its way out of.
+        if (data?.error === "registration_required") {
+          localStorage.removeItem(DEVICE_TOKEN_KEY);
           setPhase("form");
           return;
         }
