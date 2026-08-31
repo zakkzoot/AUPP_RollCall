@@ -51,8 +51,8 @@ const ERROR_COPY: Record<string, { title: string; body: string }> = {
     body: "Your ID looks fine, but the device couldn't be registered. Show your teacher this screen — re-tapping won't help.",
   },
   registration_required: {
-    title: "Set this device up again",
-    body: "This device isn't recognised any more. Tap the tag once more and enter your student ID.",
+    title: "Student ID didn't reach the server",
+    body: "Your ID was sent but the server says it didn't arrive. Show your teacher this screen — re-tapping won't help.",
   },
   generic: {
     title: "Something went wrong",
@@ -148,18 +148,28 @@ export default function CheckIn() {
       }
 
       if (!res.ok || !data?.ok) {
+        // Two answers send us back to the form rather than to an error. Both
+        // set the detail line first: a silent return to the form is how a real
+        // failure ends up looking like a dead button.
+
         // No register for this lesson, so we do need a name after all.
         if (data?.error === "name_required") {
           setNeedName(true);
+          setDetail(describeFailure(res.status, data, raw));
           setPhase("form");
           return;
         }
 
-        // The stored token doesn't match any student — the row it pointed at is
+        // A stored token that matches no student — the row it pointed at is
         // gone. Drop it and let them register again, rather than stranding the
         // phone on an error it can never tap its way out of.
-        if (data?.error === "registration_required") {
+        //
+        // Only when we actually sent a token, though. The same answer to a
+        // request carrying a typed student_id is a genuine failure, and bouncing
+        // that back to the form loops forever with nothing on screen.
+        if (data?.error === "registration_required" && deviceToken) {
           localStorage.removeItem(DEVICE_TOKEN_KEY);
+          setDetail(describeFailure(res.status, data, raw));
           setPhase("form");
           return;
         }
@@ -214,6 +224,7 @@ export default function CheckIn() {
             setStudentId={setStudentId}
             needName={needName}
             submitting={submitting}
+            detail={detail}
             onSubmit={() => submit(null)}
           />
         )}
@@ -257,12 +268,14 @@ function RegisterForm({
   setStudentId,
   needName,
   submitting,
+  detail,
   onSubmit,
 }: {
   fullName: string;
   studentId: string;
   setFullName: (v: string) => void;
   setStudentId: (v: string) => void;
+  detail?: string | null;
   needName: boolean;
   submitting: boolean;
   onSubmit: () => void;
@@ -319,6 +332,12 @@ function RegisterForm({
       >
         {submitting ? "Checking in…" : "Check in"}
       </button>
+
+      {detail && (
+        <p className="mt-5 text-mist/35 text-xs font-mono break-words leading-relaxed text-center">
+          {detail}
+        </p>
+      )}
     </div>
   );
 }
