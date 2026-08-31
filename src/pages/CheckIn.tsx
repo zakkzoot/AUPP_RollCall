@@ -42,17 +42,41 @@ const ERROR_COPY: Record<string, { title: string; body: string }> = {
     title: "Tag not recognised",
     body: "This tag isn't set up yet. Let your teacher know.",
   },
+  could_not_record: {
+    title: "Couldn't save your check-in",
+    body: "You're in the right place at the right time, but the attendance record didn't save. Show your teacher this screen — re-tapping won't help.",
+  },
+  could_not_register: {
+    title: "Couldn't set up this device",
+    body: "Your ID looks fine, but the device couldn't be registered. Show your teacher this screen — re-tapping won't help.",
+  },
   generic: {
     title: "Something went wrong",
     body: "Couldn't check you in. Try tapping the tag once more.",
   },
 };
 
+// One line naming the actual cause. `data` is null when the body wasn't JSON at
+// all, which is itself the answer — a gateway rejection rather than our function.
+function describeFailure(status: number, data: any, raw: string): string {
+  // An HTML error page carries one useful sentence buried in markup; keep the
+  // words and drop the tags rather than printing a page of angle brackets.
+  const fallback = /^\s*</.test(raw)
+    ? raw.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()
+    : raw.trim();
+  const message = data?.error ?? data?.message ?? data?.msg ?? fallback;
+  const short = message.length > 160 ? `${message.slice(0, 160)}…` : message;
+  return short ? `${status} · ${short}` : `${status} · no response body`;
+}
+
 export default function CheckIn() {
   const { tagCode } = useParams();
   const [phase, setPhase] = useState<Phase>("locating");
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [errorKey, setErrorKey] = useState("generic");
+  // The real status and server message, shown small under the friendly copy so a
+  // failure can be diagnosed from the phone in the room rather than guessed at.
+  const [detail, setDetail] = useState<string | null>(null);
   const [success, setSuccess] = useState<SuccessData | null>(null);
   const [flagged, setFlagged] = useState(false);
 
@@ -108,16 +132,26 @@ export default function CheckIn() {
           lng: coords.lng,
         }),
       });
-      const data = await res.json();
+      // Read as text first. A rejection from the Supabase gateway — the function
+      // not deployed, or JWT verification left on — can answer with HTML, and
+      // res.json() would throw and lose the one thing worth knowing.
+      const raw = await res.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        // Leave data null; `raw` still carries the evidence.
+      }
 
-      if (!res.ok || !data.ok) {
+      if (!res.ok || !data?.ok) {
         // No register for this lesson, so we do need a name after all.
-        if (data.error === "name_required") {
+        if (data?.error === "name_required") {
           setNeedName(true);
           setPhase("form");
           return;
         }
-        setErrorKey(ERROR_COPY[data.error] ? data.error : "generic");
+        setErrorKey(ERROR_COPY[data?.error] ? data.error : "generic");
+        setDetail(describeFailure(res.status, data, raw));
         setPhase("error");
         return;
       }
@@ -132,8 +166,10 @@ export default function CheckIn() {
         checked_in_at: data.checked_in_at,
       });
       setPhase("success");
-    } catch {
+    } catch (e: any) {
+      // Never reached the server: DNS, CORS, offline, blocked request.
       setErrorKey("generic");
+      setDetail(`No reply from the server · ${e?.message ?? "network error"}`);
       setPhase("error");
     } finally {
       setSubmitting(false);
@@ -175,6 +211,7 @@ export default function CheckIn() {
           <ErrorState
             title={ERROR_COPY[errorKey].title}
             body={ERROR_COPY[errorKey].body}
+            detail={detail}
           />
         )}
       </div>
@@ -329,7 +366,15 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ErrorState({ title, body }: { title: string; body: string }) {
+function ErrorState({
+  title,
+  body,
+  detail,
+}: {
+  title: string;
+  body: string;
+  detail?: string | null;
+}) {
   return (
     <div className="text-center w-full">
       <div className="mx-auto w-24 h-24 rounded-full bg-halt/10 flex items-center justify-center">
@@ -347,6 +392,11 @@ function ErrorState({ title, body }: { title: string; body: string }) {
       </div>
       <h1 className="font-display text-3xl font-bold mt-7">{title}</h1>
       <p className="text-mist/60 mt-3 leading-relaxed">{body}</p>
+      {detail && (
+        <p className="mt-6 text-mist/35 text-xs font-mono break-words leading-relaxed">
+          {detail}
+        </p>
+      )}
     </div>
   );
 }
