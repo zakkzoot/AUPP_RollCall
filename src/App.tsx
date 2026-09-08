@@ -13,6 +13,7 @@ import Login from "./pages/teacher/Login";
 import Dashboard from "./pages/teacher/Dashboard";
 import Timetable from "./pages/teacher/Timetable";
 import Classes from "./pages/teacher/Classes";
+import Issues from "./pages/teacher/Issues";
 import Locations from "./pages/teacher/Locations";
 import Tag from "./pages/teacher/Tag";
 
@@ -114,6 +115,14 @@ export default function App() {
           element={
             <RequireAuth>
               <Locations />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/issues"
+          element={
+            <RequireAuth>
+              <Issues />
             </RequireAuth>
           }
         />

@@ -9,7 +9,9 @@ type Phase =
   | "checking"
   | "form"
   | "success"
-  | "error";
+  | "error"
+  | "emergency"
+  | "emergency_sent";
 
 interface SuccessData {
   full_name: string;
@@ -73,6 +75,24 @@ function describeFailure(status: number, data: any, raw: string): string {
   return short ? `${status} · ${short}` : `${status} · no response body`;
 }
 
+// Phones take enormous photographs and this one only has to be recognisable.
+// Downscaling in the browser keeps the request small enough to survive a bad
+// classroom connection, and keeps the stored image proportionate to its purpose.
+async function shrinkToDataUrl(file: File, maxEdge = 800): Promise<string> {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+  const w = Math.round(bitmap.width * scale);
+  const h = Math.round(bitmap.height * scale);
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Could not read the photo on this device.");
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close?.();
+  return canvas.toDataURL("image/jpeg", 0.7);
+}
+
 export default function CheckIn() {
   const { tagCode } = useParams();
   const [phase, setPhase] = useState<Phase>("locating");
@@ -91,6 +111,11 @@ export default function CheckIn() {
   // Students normally type only their ID and the register supplies the name.
   // The name field appears only when the server says there is no register.
   const [needName, setNeedName] = useState(false);
+
+  // Emergency route: a selfie plus name and ID, held for the teacher.
+  const [selfie, setSelfie] = useState<string | null>(null);
+  const [selfieBusy, setSelfieBusy] = useState(false);
+  const [emergencyError, setEmergencyError] = useState<string | null>(null);
 
   // Step 1: get location on mount.
   useEffect(() => {
@@ -199,6 +224,55 @@ export default function CheckIn() {
     }
   }
 
+  async function submitEmergency() {
+    if (!coords || !selfie) return;
+    setSubmitting(true);
+    setEmergencyError(null);
+    try {
+      const res = await fetch(CHECKIN_FN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "emergency",
+          tag_code: tagCode,
+          student_id: studentId.trim(),
+          full_name: fullName.trim(),
+          selfie,
+          lat: coords.lat,
+          lng: coords.lng,
+        }),
+      });
+      const raw = await res.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        // Leave null; `raw` is the evidence.
+      }
+      if (!res.ok || !data?.ok) {
+        setEmergencyError(describeFailure(res.status, data, raw));
+        return;
+      }
+      setPhase("emergency_sent");
+    } catch (e: any) {
+      setEmergencyError(`No reply from the server · ${e?.message ?? "network error"}`);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function pickSelfie(file: File) {
+    setSelfieBusy(true);
+    setEmergencyError(null);
+    try {
+      setSelfie(await shrinkToDataUrl(file));
+    } catch (e: any) {
+      setEmergencyError(e?.message ?? "Could not read that photo.");
+    } finally {
+      setSelfieBusy(false);
+    }
+  }
+
   return (
     <div className="min-h-[100dvh] bg-ink text-mist font-body flex flex-col items-center">
       {/* Full-width AUPP logo header — spans the device viewport, keeps aspect ratio */}
@@ -236,8 +310,29 @@ export default function CheckIn() {
             title={ERROR_COPY[errorKey].title}
             body={ERROR_COPY[errorKey].body}
             detail={detail}
+            onEmergency={() => {
+              setEmergencyError(null);
+              setPhase("emergency");
+            }}
           />
         )}
+        {phase === "emergency" && (
+          <EmergencyForm
+            fullName={fullName}
+            studentId={studentId}
+            setFullName={setFullName}
+            setStudentId={setStudentId}
+            selfie={selfie}
+            selfieBusy={selfieBusy}
+            onPickSelfie={pickSelfie}
+            onClearSelfie={() => setSelfie(null)}
+            submitting={submitting}
+            error={emergencyError}
+            onSubmit={submitEmergency}
+            onBack={() => setPhase("error")}
+          />
+        )}
+        {phase === "emergency_sent" && <EmergencySent name={fullName} />}
       </div>
     </div>
   );
@@ -402,10 +497,12 @@ function ErrorState({
   title,
   body,
   detail,
+  onEmergency,
 }: {
   title: string;
   body: string;
   detail?: string | null;
+  onEmergency?: () => void;
 }) {
   return (
     <div className="text-center w-full">
@@ -429,6 +526,162 @@ function ErrorState({
           {detail}
         </p>
       )}
+
+      {onEmergency && (
+        <button
+          onClick={onEmergency}
+          className="mt-8 w-full border border-white/20 text-mist font-display font-semibold rounded-xl py-3.5 active:scale-[0.98] transition-transform"
+        >
+          Can't check in? Ask your teacher
+        </button>
+      )}
+    </div>
+  );
+}
+
+function EmergencyForm({
+  fullName,
+  studentId,
+  setFullName,
+  setStudentId,
+  selfie,
+  selfieBusy,
+  onPickSelfie,
+  onClearSelfie,
+  submitting,
+  error,
+  onSubmit,
+  onBack,
+}: {
+  fullName: string;
+  studentId: string;
+  setFullName: (v: string) => void;
+  setStudentId: (v: string) => void;
+  selfie: string | null;
+  selfieBusy: boolean;
+  onPickSelfie: (f: File) => void;
+  onClearSelfie: () => void;
+  submitting: boolean;
+  error: string | null;
+  onSubmit: () => void;
+  onBack: () => void;
+}) {
+  const canSubmit =
+    !!selfie && studentId.trim().length > 0 && fullName.trim().length > 1;
+  return (
+    <div className="w-full text-left">
+      <p className="text-red font-display font-semibold tracking-wide uppercase text-sm">
+        Can't check in
+      </p>
+      <h1 className="font-display text-3xl font-bold mt-2 leading-tight">
+        Ask your teacher
+      </h1>
+      <p className="text-mist/60 mt-3 leading-relaxed">
+        Send your teacher a photo with your name and ID. They'll review it and
+        mark you present. <strong className="text-mist/80">This is not a
+        check-in yet</strong> — don't leave until your teacher has seen it.
+      </p>
+
+      <div className="mt-8 space-y-4">
+        <div>
+          <label className="block text-sm text-mist/70 mb-1.5">Photo of you</label>
+          {selfie ? (
+            <div className="relative">
+              <img
+                src={selfie}
+                alt="Your photo"
+                className="w-full rounded-xl border border-white/10"
+              />
+              <button
+                onClick={onClearSelfie}
+                className="mt-2 text-sm text-mist/60 underline"
+              >
+                Take it again
+              </button>
+            </div>
+          ) : (
+            <label className="block border border-dashed border-white/20 rounded-xl px-4 py-8 text-center text-mist/60 cursor-pointer">
+              {selfieBusy ? "Preparing…" : "Tap to take a photo"}
+              <input
+                type="file"
+                accept="image/*"
+                capture="user"
+                className="hidden"
+                onChange={(e) =>
+                  e.target.files?.[0] && onPickSelfie(e.target.files[0])
+                }
+              />
+            </label>
+          )}
+        </div>
+
+        <div>
+          <label className="block text-sm text-mist/70 mb-1.5">Full name</label>
+          <input
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+            autoComplete="name"
+            className="w-full bg-dusk border border-white/10 rounded-xl px-4 py-4 text-lg text-mist placeholder-mist/30 focus:outline-none focus:border-red focus:ring-1 focus:ring-red"
+            placeholder="Jane Doe"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm text-mist/70 mb-1.5">Student ID</label>
+          <input
+            value={studentId}
+            onChange={(e) => setStudentId(e.target.value)}
+            className="w-full bg-dusk border border-white/10 rounded-xl px-4 py-4 text-lg text-mist placeholder-mist/30 focus:outline-none focus:border-red focus:ring-1 focus:ring-red"
+            placeholder="S12345"
+          />
+        </div>
+      </div>
+
+      <button
+        onClick={onSubmit}
+        disabled={!canSubmit || submitting}
+        className="mt-8 w-full bg-red text-white font-display font-bold text-lg rounded-xl py-4 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98] transition-transform"
+      >
+        {submitting ? "Sending…" : "Send to my teacher"}
+      </button>
+      <button onClick={onBack} className="mt-3 w-full text-mist/50 py-2">
+        Back
+      </button>
+
+      {error && (
+        <p className="mt-5 text-mist/35 text-xs font-mono break-words leading-relaxed text-center">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function EmergencySent({ name }: { name: string }) {
+  return (
+    <div className="text-center w-full">
+      <div className="mx-auto w-24 h-24 rounded-full bg-amber-400/10 flex items-center justify-center">
+        <svg
+          viewBox="0 0 24 24"
+          className="w-12 h-12 text-amber-400"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M12 8v4l3 2" />
+          <circle cx="12" cy="12" r="9" />
+        </svg>
+      </div>
+      <h1 className="font-display text-3xl font-bold mt-7">Sent for review</h1>
+      <p className="text-mist/60 mt-3 leading-relaxed">
+        Your teacher has your photo{name.trim() ? `, ${name.trim()}` : ""}. They
+        need to approve it before it counts.
+      </p>
+      <p className="text-mist/80 mt-5 leading-relaxed font-medium">
+        You are not marked present yet. Tell your teacher before you leave.
+      </p>
     </div>
   );
 }
